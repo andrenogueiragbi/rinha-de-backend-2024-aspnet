@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using rinha.Domain.Model;
 using rinha.Infrastruture;
@@ -14,38 +15,29 @@ namespace rinha.Controllers
             rotaClientes.MapGet("/{id}/extrato", async (int id, AppDBContext context) =>
             {
 
-
                 if (id < 1 || id > 5)
                     return Results.NotFound();
 
-                var ultimas_transacoes = await context.transacoes
-                .Where(t => t.Cliente_id == id)
-                .OrderByDescending(t => t.Realizada_em)
-                .Take(10)
-                .Select(
-                    t => new
-                    {
-                        t.Valor,
-                        t.Tipo,
-                        t.Descricao,
-                        t.Realizada_em,
-                    }
-                )
-                .ToListAsync();
 
-                var cliente = await context.clientes.SingleOrDefaultAsync(t => t.Id == id);
+                var value = await context.Extrato
+                  .FromSqlInterpolated($"SELECT * FROM proc_extrato({id})")
+                  .ToListAsync();
 
-                return Results.Ok(new { saldo = new { total = cliente.Saldo, data_extrato = DateTime.UtcNow, limite = cliente.Limite }, ultimas_transacoes });
+
+                var objetoDeserializado = JsonSerializer.Deserialize<ExtartoBody>(value[0].proc_extrato);
+                return Results.Ok(objetoDeserializado);
 
             });
 
             rotaClientes.MapPost("{id}/transacoes", async (int id, AddTransacaoRecords? Request, AppDBContext context) =>
             {
+
+
                 if (id < 1 || id > 5)
                     return Results.NotFound();
 
                 if (
-                    Request == null ||  
+                    Request == null ||
                     String.IsNullOrEmpty(Request.descricao) ||
                     Request.valor < 0 ||
                     Request.descricao.Length > 10 ||
@@ -55,43 +47,20 @@ namespace rinha.Controllers
                     return Results.UnprocessableEntity();
                 }
 
-                var cliente = await context.clientes.FindAsync(id);
+                var extrato = await context.AtualizarSaldos
+                .FromSqlInterpolated($"SELECT * FROM maker_transacao({id}, {Request.tipo}, {Request.descricao}, {Request.valor})").ToListAsync();
 
-                switch (Request.tipo)
+
+
+
+                if (extrato[0].falha)
                 {
-                    case "c":
-                        cliente.Saldo += Request.valor;
+                    return Results.UnprocessableEntity();
 
-                        context.transacoes.Add(new Transacoes(id, Request.valor, Request.tipo, Request.descricao));
-
-                        await context.SaveChangesAsync();
-                        return Results.Ok(new { limite = cliente.Limite, saldo = cliente.Saldo });
-
-                    case "d":
-
-                        cliente.Saldo -= Request.valor;
-
-                        if (cliente.Limite + cliente.Saldo < 0)
-                        {
-                            return Results.UnprocessableEntity();
-                        }
-                        else
-                        {
-
-                            context.transacoes.Add(new Transacoes(id, Request.valor, Request.tipo, Request.descricao));
-
-                            await context.SaveChangesAsync();
-                            return Results.Ok(new { limite = cliente.Limite, saldo = cliente.Saldo });
-
-                        }
-
-
-
-                    default:
-                        return Results.UnprocessableEntity();
                 }
-            });
 
+                return Results.Ok(new { saldo = extrato[0].saldo, limite = extrato[0].limite_cliente, });
+            });
         }
     }
 }
